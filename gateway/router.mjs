@@ -55,6 +55,13 @@ const MODELS = {
         apiKey: ZAI_API_KEY
     },
 
+    "claude-glm-4-7-flash": {
+        provider: "Z.AI",
+        upstreamModel: "glm-4.7-flash",
+        url: "https://api.z.ai/api/anthropic/v1/messages",
+        apiKey: ZAI_API_KEY
+    },
+
     "claude-deepseek-v4-flash": {
         provider: "DeepSeek",
         upstreamModel: "deepseek-v4-flash",
@@ -278,6 +285,7 @@ server.listen(PORT, HOST, () => {
     console.log("");
     console.log("Models:");
     console.log("  claude-glm-5-3-flash       -> Z.AI");
+    console.log("  claude-glm-4-7-flash       -> Z.AI");
     console.log("  claude-deepseek-v4-flash   -> DeepSeek");
     console.log("");
 });
