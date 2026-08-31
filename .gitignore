@@ -1,0 +1,19 @@
+﻿# Secrets
+.env
+
+# Claude Code local configuration
+.claude/
+
+# Node
+node_modules/
+
+# Logs
+*.log
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Editors
+.vscode/
+.idea/
