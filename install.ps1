@@ -3,10 +3,12 @@
 $ErrorActionPreference = "Stop"
 
 # ============================================================
-# Claude Code Local Model Gateway Installer
+# Claude Code Local Model Gateway
+# Portable Windows Installer
 # ============================================================
 
 $SourceRoot = $PSScriptRoot
+
 $LocalRoot = Join-Path $env:USERPROFILE "Desktop\Claude Code"
 $LocalSystem = Join-Path $LocalRoot "system"
 $LocalGateway = Join-Path $LocalSystem "gateway"
@@ -19,9 +21,17 @@ $WindowsStartup = Join-Path `
     $env:APPDATA `
     "Microsoft\Windows\Start Menu\Programs\Startup"
 
-$StartupFile = Join-Path $WindowsStartup "claude-code-gateway.vbs"
+$StartupFile = Join-Path `
+    $WindowsStartup `
+    "claude-code-local-gateway.vbs"
 
 $LocalEnv = Join-Path $LocalGateway ".env"
+
+$GatewayStdoutLog = Join-Path $LocalGateway "gateway.stdout.log"
+$GatewayStderrLog = Join-Path $LocalGateway "gateway.error.log"
+
+$GatewayPort = 4000
+$LocalToken = "sk-local-claude-code"
 
 function Write-Header {
     param([string]$Text)
@@ -33,13 +43,22 @@ function Write-Header {
     Write-Host ""
 }
 
+function Refresh-EnvironmentPath {
+    $MachinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+
+    $env:Path = "$MachinePath;$UserPath"
+}
+
 function Test-CommandExists {
     param([string]$Command)
 
-    return $null -ne (Get-Command $Command -ErrorAction SilentlyContinue)
+    return $null -ne (
+        Get-Command $Command -ErrorAction SilentlyContinue
+    )
 }
 
-function Get-SecureInput {
+function Get-SecureValue {
     param([string]$Prompt)
 
     $secure = Read-Host $Prompt -AsSecureString
@@ -54,6 +73,141 @@ function Get-SecureInput {
     }
 }
 
+function Write-Utf8NoBom {
+    param(
+        [string]$Path,
+        [string]$Content
+    )
+
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+    [System.IO.File]::WriteAllText(
+        $Path,
+        $Content,
+        $utf8NoBom
+    )
+}
+
+function Wait-ForPort {
+    param(
+        [int]$Port,
+        [int]$TimeoutSeconds = 10
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+
+    while ((Get-Date) -lt $deadline) {
+
+        $connection = Get-NetTCPConnection `
+            -LocalPort $Port `
+            -State Listen `
+            -ErrorAction SilentlyContinue
+
+        if ($connection) {
+            return $true
+        }
+
+        Start-Sleep -Milliseconds 500
+    }
+
+    return $false
+}
+
+function Get-PortProcesses {
+    param([int]$Port)
+
+    return Get-NetTCPConnection `
+        -LocalPort $Port `
+        -State Listen `
+        -ErrorAction SilentlyContinue
+}
+
+function Stop-ExistingGateway {
+    param([string]$ExpectedRouterPath)
+
+    $connections = @(Get-PortProcesses -Port $GatewayPort)
+
+    if (-not $connections) {
+        return
+    }
+
+    foreach ($connection in $connections) {
+
+        $processId = $connection.OwningProcess
+
+        if ($processId -eq 0) {
+            throw "Port $GatewayPort is occupied by a system process."
+        }
+
+        $processInfo = Get-CimInstance `
+            Win32_Process `
+            -Filter "ProcessId = $processId" `
+            -ErrorAction SilentlyContinue
+
+        $commandLine = ""
+
+        if ($processInfo) {
+            $commandLine = [string]$processInfo.CommandLine
+        }
+
+        $normalizedCommandLine = $commandLine.ToLowerInvariant()
+        $normalizedExpectedPath = $ExpectedRouterPath.ToLowerInvariant()
+
+        if (
+            $normalizedCommandLine.Contains("router.mjs") -and
+            $normalizedCommandLine.Contains($normalizedExpectedPath)
+        ) {
+
+            Write-Host "Stopping existing local gateway process (PID $processId)..."
+
+            Stop-Process `
+                -Id $processId `
+                -Force `
+                -ErrorAction Stop
+
+        }
+        else {
+
+            throw (
+                "Port $GatewayPort is already in use by another process " +
+                "(PID $processId). The installer will not stop it automatically."
+            )
+        }
+    }
+
+    Start-Sleep -Seconds 1
+}
+
+function Backup-File {
+    param([string]$Path)
+
+    if (-not (Test-Path $Path -PathType Leaf)) {
+        return
+    }
+
+    $BackupPath = "$Path.backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+
+    Copy-Item `
+        $Path `
+        $BackupPath `
+        -Force
+
+    Write-Host "Backup created:"
+    Write-Host "  $BackupPath" -ForegroundColor Yellow
+}
+
+function Assert-File {
+    param([string]$Path)
+
+    if (-not (Test-Path $Path -PathType Leaf)) {
+        throw "Required file is missing: $Path"
+    }
+}
+
+# ============================================================
+# Start
+# ============================================================
+
 Write-Header "CLAUDE CODE LOCAL MODEL GATEWAY INSTALLER"
 
 Write-Host "Source:"
@@ -64,24 +218,25 @@ Write-Host "Installation:"
 Write-Host "  $LocalSystem"
 
 # ============================================================
-# 1. Kontroller source
+# 1. Validate installer files
 # ============================================================
 
-Write-Header "1/8 - KONTROLLERER INSTALLASJONSFILER"
+Write-Header "1/8 - CHECKING INSTALLATION FILES"
 
 $RequiredFiles = @(
     "gateway\router.mjs",
-    "gateway\.env.example"
+    "gateway\.env.example",
+    "startup\start-hidden.vbs",
+    "install.ps1"
 )
 
-foreach ($File in $RequiredFiles) {
-    $FullPath = Join-Path $SourceRoot $File
+foreach ($RelativePath in $RequiredFiles) {
 
-    if (-not (Test-Path $FullPath)) {
-        throw "Mangler nødvendig fil: $FullPath"
-    }
+    $FullPath = Join-Path $SourceRoot $RelativePath
 
-    Write-Host "OK  $File" -ForegroundColor Green
+    Assert-File $FullPath
+
+    Write-Host "OK  $RelativePath" -ForegroundColor Green
 }
 
 # ============================================================
@@ -90,323 +245,539 @@ foreach ($File in $RequiredFiles) {
 
 Write-Header "2/8 - API KEYS"
 
-Write-Host "API-nøklene lagres lokalt i:"
+Write-Host "The API keys will be stored only in:"
 Write-Host "  $LocalEnv"
+
 Write-Host ""
-Write-Host "Inputfeltet skjuler nøklene mens du skriver."
+Write-Host "Input is hidden while you type."
 Write-Host ""
 
-$ZaiKey = Get-SecureInput "Z.AI API key"
-$DeepSeekKey = Get-SecureInput "DeepSeek API key"
+$ZaiKey = Get-SecureValue "Z.AI API key"
+$DeepSeekKey = Get-SecureValue "DeepSeek API key"
 
 if ([string]::IsNullOrWhiteSpace($ZaiKey)) {
-    throw "Z.AI API key kan ikke være tom."
+    throw "Z.AI API key cannot be empty."
 }
 
 if ([string]::IsNullOrWhiteSpace($DeepSeekKey)) {
-    throw "DeepSeek API key kan ikke være tom."
+    throw "DeepSeek API key cannot be empty."
 }
 
 # ============================================================
-# 3. Node.js
+# 3. Dependencies
 # ============================================================
 
-Write-Header "3/8 - NODE.JS"
+Write-Header "3/8 - CHECKING DEPENDENCIES"
 
-if (Test-CommandExists "node") {
-    Write-Host "Node.js er allerede installert:" -ForegroundColor Green
-    node --version
-}
-else {
-    Write-Host "Node.js ble ikke funnet."
+Refresh-EnvironmentPath
+
+# -------------------------
+# Node.js
+# -------------------------
+
+if (-not (Test-CommandExists "node")) {
+
+    Write-Host "Node.js was not found."
 
     if (Test-CommandExists "winget") {
-        Write-Host "Installerer Node.js LTS med winget..."
+
+        Write-Host "Installing Node.js LTS with winget..."
 
         winget install `
             --id OpenJS.NodeJS.LTS `
             --exact `
             --accept-package-agreements `
             --accept-source-agreements
+
+        Refresh-EnvironmentPath
     }
     else {
-        throw "Node.js mangler og winget finnes ikke. Installer Node.js manuelt og kjør install.ps1 på nytt."
-    }
 
-    Write-Host ""
-    Write-Host "Lukk PowerShell og åpne et nytt PowerShell-vindu etter Node-installasjonen."
-    Write-Host "Kjør deretter install.ps1 på nytt."
-    exit 0
+        throw (
+            "Node.js is missing and winget is unavailable. " +
+            "Install Node.js 18+ and run the installer again."
+        )
+    }
 }
 
+if (-not (Test-CommandExists "node")) {
+
+    throw (
+        "Node.js is still unavailable. " +
+        "Open a new PowerShell window and run the installer again."
+    )
+}
+
+Write-Host "Node.js:"
+node --version
+
 if (-not (Test-CommandExists "npm")) {
-    throw "npm ble ikke funnet. Kontroller Node.js-installasjonen."
+    throw "npm was not found."
 }
 
 Write-Host "npm:"
 npm --version
 
+# -------------------------
+# Git
+# -------------------------
+
+if (-not (Test-CommandExists "git")) {
+
+    Write-Host ""
+    Write-Host "Git was not found."
+
+    if (Test-CommandExists "winget") {
+
+        Write-Host "Installing Git for Windows..."
+
+        winget install `
+            --id Git.Git `
+            --exact `
+            --accept-package-agreements `
+            --accept-source-agreements
+
+        Refresh-EnvironmentPath
+    }
+}
+
+if (Test-CommandExists "git") {
+
+    Write-Host "Git:"
+    git --version
+
+}
+else {
+
+    Write-Host `
+        "WARNING: Git was not found. Git is recommended for Claude Code." `
+        -ForegroundColor Yellow
+}
+
 # ============================================================
 # 4. Claude Code
 # ============================================================
 
-Write-Header "4/8 - CLAUDE CODE"
+Write-Header "4/8 - CHECKING CLAUDE CODE"
+
+Refresh-EnvironmentPath
 
 if (Test-CommandExists "claude") {
-    Write-Host "Claude Code er allerede installert:" -ForegroundColor Green
+
+    Write-Host "Claude Code is already installed:" -ForegroundColor Green
     claude --version
+
 }
 else {
-    Write-Host "Claude Code ble ikke funnet."
-    Write-Host "Installerer..."
 
-    npm config set allow-scripts=@anthropic-ai/claude-code --location=user
+    Write-Host "Claude Code was not found."
+    Write-Host "Installing Claude Code..."
+
+    npm config set `
+        allow-scripts=@anthropic-ai/claude-code `
+        --location=user
 
     npm install -g @anthropic-ai/claude-code
 
-    Write-Host ""
+    Refresh-EnvironmentPath
 
     if (-not (Test-CommandExists "claude")) {
-        throw "Claude Code ble installert, men kommandoen 'claude' ble ikke funnet. Åpne et nytt PowerShell-vindu og kjør install.ps1 på nytt."
+
+        throw (
+            "Claude Code was installed but the 'claude' command " +
+            "is unavailable. Open a new PowerShell window and " +
+            "run the installer again."
+        )
     }
 
+    Write-Host ""
+    Write-Host "Claude Code:"
     claude --version
 }
 
 # ============================================================
-# 5. Kopier systemet lokalt
+# 5. Install system files
 # ============================================================
 
-Write-Header "5/8 - INSTALLERER SYSTEMET"
+Write-Header "5/8 - INSTALLING SYSTEM FILES"
 
-New-Item -ItemType Directory -Path $LocalSystem -Force | Out-Null
-New-Item -ItemType Directory -Path $LocalGateway -Force | Out-Null
-New-Item -ItemType Directory -Path $LocalStartup -Force | Out-Null
+New-Item `
+    -ItemType Directory `
+    -Path $LocalSystem `
+    -Force |
+    Out-Null
 
-# Kopier alle systemfiler unntatt .env
-Get-ChildItem -Path $SourceRoot -Force |
-    Where-Object {
-        $_.Name -notin @(".env", ".git", "install.ps1")
-    } |
-    ForEach-Object {
-        Copy-Item `
-            -Path $_.FullName `
-            -Destination (Join-Path $LocalSystem $_.Name) `
-            -Recurse `
-            -Force
-    }
+New-Item `
+    -ItemType Directory `
+    -Path $LocalGateway `
+    -Force |
+    Out-Null
 
-# Kopier installereren separat
+New-Item `
+    -ItemType Directory `
+    -Path $LocalStartup `
+    -Force |
+    Out-Null
+
+# Copy gateway files explicitly.
 Copy-Item `
-    -Path (Join-Path $SourceRoot "install.ps1") `
-    -Destination (Join-Path $LocalSystem "install.ps1") `
+    (Join-Path $SourceRoot "gateway\router.mjs") `
+    (Join-Path $LocalGateway "router.mjs") `
     -Force
 
-Write-Host "Systemet er kopiert til:"
-Write-Host "  $LocalSystem" -ForegroundColor Green
+Copy-Item `
+    (Join-Path $SourceRoot "gateway\.env.example") `
+    (Join-Path $LocalGateway ".env.example") `
+    -Force
 
-# ============================================================
-# 6. Opprett .env
-# ============================================================
+# Copy startup script.
+Copy-Item `
+    (Join-Path $SourceRoot "startup\start-hidden.vbs") `
+    (Join-Path $LocalStartup "start-hidden.vbs") `
+    -Force
 
-Write-Header "6/8 - OPPRETTER API-KONFIGURASJON"
+# Copy documentation and repository files.
+foreach ($File in @(
+    "README.md",
+    "SETUP.md",
+    "LICENSE",
+    ".gitignore",
+    ".gitattributes"
+)) {
 
-if (Test-Path $LocalEnv) {
-    $BackupEnv = "$LocalEnv.backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+    $SourceFile = Join-Path $SourceRoot $File
+    $DestinationFile = Join-Path $LocalSystem $File
 
-    Copy-Item $LocalEnv $BackupEnv -Force
+    if (Test-Path $SourceFile -PathType Leaf) {
 
-    Write-Host "Eksisterende .env ble sikkerhetskopiert:"
-    Write-Host "  $BackupEnv" -ForegroundColor Yellow
+        Copy-Item `
+            $SourceFile `
+            $DestinationFile `
+            -Force
+    }
 }
 
-@"
+# Keep a local copy of the installer.
+Copy-Item `
+    (Join-Path $SourceRoot "install.ps1") `
+    (Join-Path $LocalSystem "install.ps1") `
+    -Force
+
+# Remove accidental nested gateway directory from older releases.
+$NestedGateway = Join-Path $LocalGateway "gateway"
+
+if (Test-Path $NestedGateway) {
+
+    Write-Host "Removing obsolete nested gateway directory..."
+
+    Remove-Item `
+        $NestedGateway `
+        -Recurse `
+        -Force
+}
+
+# Verify critical files.
+$CriticalFiles = @(
+    (Join-Path $LocalGateway "router.mjs"),
+    (Join-Path $LocalGateway ".env.example"),
+    (Join-Path $LocalStartup "start-hidden.vbs")
+)
+
+foreach ($CriticalFile in $CriticalFiles) {
+    Assert-File $CriticalFile
+}
+
+Write-Host "System files installed successfully." -ForegroundColor Green
+
+# ============================================================
+# 6. Create .env
+# ============================================================
+
+Write-Header "6/8 - CREATING LOCAL API CONFIGURATION"
+
+Backup-File $LocalEnv
+
+$EnvContent = @"
 ZAI_API_KEY=$ZaiKey
 DEEPSEEK_API_KEY=$DeepSeekKey
-"@ | Set-Content `
+"@
+
+Write-Utf8NoBom `
     -Path $LocalEnv `
-    -Encoding UTF8
+    -Content $EnvContent
 
-Write-Host ".env opprettet." -ForegroundColor Green
+Write-Host ".env created successfully." -ForegroundColor Green
+
+# Clear plaintext variables as soon as possible.
+$ZaiKey = $null
+$DeepSeekKey = $null
 
 # ============================================================
-# 7. Claude Code settings
+# 7. Configure Claude Code and Windows Startup
 # ============================================================
 
-Write-Header "7/8 - KONFIGURERER CLAUDE CODE"
+Write-Header "7/8 - CONFIGURING CLAUDE CODE"
 
-New-Item -ItemType Directory -Path $ClaudeDir -Force | Out-Null
+New-Item `
+    -ItemType Directory `
+    -Path $ClaudeDir `
+    -Force |
+    Out-Null
 
-if (Test-Path $ClaudeSettings) {
+# -------------------------
+# settings.json
+# -------------------------
 
-    $SettingsBackup = "$ClaudeSettings.backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+if (Test-Path $ClaudeSettings -PathType Leaf) {
 
-    Copy-Item `
-        $ClaudeSettings `
-        $SettingsBackup `
-        -Force
-
-    Write-Host "Eksisterende settings er sikkerhetskopiert:"
-    Write-Host "  $SettingsBackup" -ForegroundColor Yellow
+    Backup-File $ClaudeSettings
 
     try {
+
         $Settings = Get-Content `
             $ClaudeSettings `
             -Raw |
             ConvertFrom-Json
+
     }
     catch {
-        throw "Eksisterende Claude Code settings.json er ugyldig JSON. Backup finnes på $SettingsBackup"
+
+        throw (
+            "Existing settings.json is invalid JSON. " +
+            "A backup was created before the installer stopped."
+        )
     }
+
 }
 else {
+
     $Settings = [PSCustomObject]@{}
 }
 
+# Ensure env object exists.
 if (-not ($Settings.PSObject.Properties.Name -contains "env")) {
-    $Settings | Add-Member `
-        -MemberType NoteProperty `
-        -Name env `
-        -Value ([PSCustomObject]@{})
+
+    $Settings |
+        Add-Member `
+            -MemberType NoteProperty `
+            -Name env `
+            -Value ([PSCustomObject]@{})
 }
 
-$Settings.env | Add-Member `
-    -MemberType NoteProperty `
-    -Name ANTHROPIC_BASE_URL `
-    -Value "http://127.0.0.1:4000" `
-    -Force
+$Settings.env |
+    Add-Member `
+        -MemberType NoteProperty `
+        -Name ANTHROPIC_BASE_URL `
+        -Value "http://127.0.0.1:4000" `
+        -Force
 
-$Settings.env | Add-Member `
-    -MemberType NoteProperty `
-    -Name ANTHROPIC_AUTH_TOKEN `
-    -Value "sk-local-claude-code" `
-    -Force
+$Settings.env |
+    Add-Member `
+        -MemberType NoteProperty `
+        -Name ANTHROPIC_AUTH_TOKEN `
+        -Value $LocalToken `
+        -Force
 
-$Settings.env | Add-Member `
-    -MemberType NoteProperty `
-    -Name CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY `
-    -Value "1" `
-    -Force
+$Settings.env |
+    Add-Member `
+        -MemberType NoteProperty `
+        -Name CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY `
+        -Value "1" `
+        -Force
 
-$Settings.env | Add-Member `
-    -MemberType NoteProperty `
-    -Name CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT `
-    -Value "1" `
-    -Force
+$Settings.env |
+    Add-Member `
+        -MemberType NoteProperty `
+        -Name CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT `
+        -Value "1" `
+        -Force
+
+# Default model.
+$Settings |
+    Add-Member `
+        -MemberType NoteProperty `
+        -Name model `
+        -Value "claude-glm-5-3-flash" `
+        -Force
+
+# Only expose gateway models in the model picker.
+$ModelPicker = [PSCustomObject]@{
+    replaceBuiltInOptions = $true
+
+    options = @(
+        [PSCustomObject]@{
+            model = "claude-glm-5-3-flash"
+            label = "GLM-5.3-Flash"
+            description = "Z.AI"
+        }
+
+        [PSCustomObject]@{
+            model = "claude-glm-4-7-flash"
+            label = "GLM-4.7-Flash"
+            description = "Z.AI"
+        }
+
+        [PSCustomObject]@{
+            model = "claude-deepseek-v4-flash"
+            label = "DeepSeek V4 Flash"
+            description = "DeepSeek"
+        }
+    )
+}
 
 $Settings |
-    ConvertTo-Json -Depth 20 |
-    Set-Content `
-        -Path $ClaudeSettings `
-        -Encoding UTF8
+    Add-Member `
+        -MemberType NoteProperty `
+        -Name modelPicker `
+        -Value $ModelPicker `
+        -Force
 
-Write-Host "Claude Code er konfigurert." -ForegroundColor Green
+Write-Utf8NoBom `
+    -Path $ClaudeSettings `
+    -Content (
+        $Settings |
+            ConvertTo-Json -Depth 20
+    )
 
-# ============================================================
-# Startup VBS
-# ============================================================
+Write-Host "Claude Code settings configured." -ForegroundColor Green
 
-$InstalledRouter = Join-Path $LocalGateway "router.mjs"
+# -------------------------
+# Windows Startup
+# -------------------------
 
-@"
-Set WShell = CreateObject("WScript.Shell")
+$LocalStartupScript = Join-Path `
+    $LocalStartup `
+    "start-hidden.vbs"
 
-Router = "$InstalledRouter"
+if (Test-Path $LocalStartupScript -PathType Leaf) {
 
-WShell.Run "node.exe """ & Router & """", 0, False
-"@ | Set-Content `
-    -Path (Join-Path $LocalStartup "start-hidden.vbs") `
-    -Encoding ASCII
+    New-Item `
+        -ItemType Directory `
+        -Path $WindowsStartup `
+        -Force |
+        Out-Null
 
-Copy-Item `
-    -Path (Join-Path $LocalStartup "start-hidden.vbs") `
-    -Destination $StartupFile `
-    -Force
+    Copy-Item `
+        $LocalStartupScript `
+        $StartupFile `
+        -Force
 
-# ============================================================
-# 8. Start gateway
-# ============================================================
-
-Write-Header "8/8 - STARTER GATEWAY"
-
-# Stopp eventuell gammel gateway på port 4000
-$Existing = Get-NetTCPConnection `
-    -LocalPort 4000 `
-    -State Listen `
-    -ErrorAction SilentlyContinue
-
-if ($Existing) {
-    foreach ($Connection in $Existing) {
-        try {
-            Stop-Process `
-                -Id $Connection.OwningProcess `
-                -Force `
-                -ErrorAction SilentlyContinue
-        }
-        catch {
-        }
-    }
-
-    Start-Sleep -Seconds 1
-}
-
-# Start router skjult
-cscript.exe `
-    (Join-Path $LocalStartup "start-hidden.vbs") |
-    Out-Null
-
-Start-Sleep -Seconds 2
-
-# ============================================================
-# Verifisering
-# ============================================================
-
-Write-Header "INSTALLASJON FERDIG"
-
-Write-Host "Gateway-status:"
-$Connection = Get-NetTCPConnection `
-    -LocalPort 4000 `
-    -State Listen `
-    -ErrorAction SilentlyContinue
-
-if ($Connection) {
-    Write-Host "OK - Gateway kjører på 127.0.0.1:4000" -ForegroundColor Green
 }
 else {
-    Write-Host "FEIL - Gateway kjører ikke." -ForegroundColor Red
-    Write-Host ""
-    Write-Host "Start den manuelt med:"
-    Write-Host "node `"$LocalGateway\router.mjs`""
-    exit 1
+
+    throw "Startup script was not installed correctly."
 }
 
-Write-Host ""
-Write-Host "Tester modell-discovery..."
+Write-Host "Windows Startup configured." -ForegroundColor Green
 
+# ============================================================
+# 8. Start and verify gateway
+# ============================================================
+
+Write-Header "8/8 - STARTING AND VERIFYING GATEWAY"
+
+$RouterPath = Join-Path $LocalGateway "router.mjs"
+
+Stop-ExistingGateway $RouterPath
+
+foreach ($LogFile in @(
+    $GatewayStdoutLog,
+    $GatewayStderrLog
+)) {
+
+    if (Test-Path $LogFile) {
+        Remove-Item $LogFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
+Start-Process `
+    -FilePath "node.exe" `
+    -ArgumentList "`"$RouterPath`"" `
+    -WindowStyle Hidden `
+    -RedirectStandardOutput $GatewayStdoutLog `
+    -RedirectStandardError $GatewayStderrLog `
+    -WorkingDirectory $LocalGateway
+
+if (-not (Wait-ForPort -Port $GatewayPort -TimeoutSeconds 10)) {
+
+    Write-Host ""
+    Write-Host "Gateway failed to start." -ForegroundColor Red
+
+    if (Test-Path $GatewayStdoutLog) {
+
+        Write-Host ""
+        Write-Host "Gateway output:"
+        Get-Content $GatewayStdoutLog -ErrorAction SilentlyContinue
+    }
+
+    if (Test-Path $GatewayStderrLog) {
+
+        Write-Host ""
+        Write-Host "Gateway errors:"
+        Get-Content $GatewayStderrLog -ErrorAction SilentlyContinue
+    }
+
+    throw "Gateway startup verification failed."
+}
+
+Write-Host `
+    "Gateway is listening on 127.0.0.1:4000." `
+    -ForegroundColor Green
+
+# Test model discovery.
 try {
+
     $Models = Invoke-RestMethod `
         -Uri "http://127.0.0.1:4000/v1/models" `
         -Headers @{
-            Authorization = "Bearer sk-local-claude-code"
+            Authorization = "Bearer $LocalToken"
         }
 
-    foreach ($Model in $Models.data) {
-        Write-Host "OK - $($Model.id)" -ForegroundColor Green
-    }
 }
 catch {
-    Write-Host "FEIL - Kunne ikke hente modeller." -ForegroundColor Red
-    Write-Host $_.Exception.Message
-    exit 1
+
+    throw (
+        "Gateway started, but /v1/models could not be reached: " +
+        $_.Exception.Message
+    )
 }
 
-Write-Host ""
-Write-Host "==========================================" -ForegroundColor Green
-Write-Host " INSTALLASJONEN ER FERDIG" -ForegroundColor Green
-Write-Host "==========================================" -ForegroundColor Green
-Write-Host ""
+$ExpectedModels = @(
+    "claude-glm-5-3-flash",
+    "claude-glm-4-7-flash",
+    "claude-deepseek-v4-flash"
+)
 
-Write-Host "Installerte filer:"
+$ReturnedModels = @(
+    $Models.data |
+        ForEach-Object { $_.id }
+)
+
+foreach ($ExpectedModel in $ExpectedModels) {
+
+    if ($ReturnedModels -contains $ExpectedModel) {
+
+        Write-Host `
+            "OK  $ExpectedModel" `
+            -ForegroundColor Green
+
+    }
+    else {
+
+        throw (
+            "Expected model was not returned by gateway: " +
+            $ExpectedModel
+        )
+    }
+}
+
+# ============================================================
+# Finished
+# ============================================================
+
+Write-Header "INSTALLATION COMPLETE"
+
+Write-Host "Installed system:"
 Write-Host "  $LocalSystem"
 
 Write-Host ""
@@ -418,18 +789,28 @@ Write-Host "Windows Startup:"
 Write-Host "  $StartupFile"
 
 Write-Host ""
-Write-Host "Start Claude Code med:"
-Write-Host "  claude" -ForegroundColor Cyan
+Write-Host "Gateway logs:"
+Write-Host "  $GatewayStdoutLog"
+Write-Host "  $GatewayStderrLog"
 
 Write-Host ""
-Write-Host "Bytt modell med:"
-Write-Host "  /model" -ForegroundColor Cyan
+Write-Host "Available models:"
+Write-Host "  GLM-5.3-Flash"
+Write-Host "  GLM-4.7-Flash"
+Write-Host "  DeepSeek V4 Flash"
 
 Write-Host ""
-Write-Host "Modeller:"
-Write-Host "  claude-glm-5-3-flash"
-Write-Host "  claude-deepseek-v4-flash"
+Write-Host "Start Claude Code with:"
+Write-Host "  claude"
 
 Write-Host ""
-Write-Host "API-nøklene dine ble ikke skrevet til terminalen eller README/SETUP."
+Write-Host "Switch models with:"
+Write-Host "  /model"
+
+Write-Host ""
+Write-Host "The gateway runs locally on:"
+Write-Host "  http://127.0.0.1:4000"
+
+Write-Host ""
+Write-Host "Installation completed successfully." -ForegroundColor Green
 Write-Host ""

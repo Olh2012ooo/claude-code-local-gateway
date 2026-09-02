@@ -1,6 +1,9 @@
-﻿Claude Code Local Model Gateway — Setup Guide
+﻿````text
+===== SETUP.md =====
 
-This document explains how to install and recreate the Claude Code Local Model Gateway on another Windows machine.
+Claude Code Local Model Gateway — Setup Guide
+
+This guide explains how to install, test, troubleshoot, and recreate the Claude Code Local Model Gateway on another Windows machine.
 
 Overview
 
@@ -10,13 +13,13 @@ Claude Code communicates with:
 
 ```text
 http://127.0.0.1:4000
-```
+````
 
-The local Node.js gateway routes requests according to the selected model.
+The local Node.js gateway reads the selected model and routes the request to the correct provider.
 
 Supported Models
 
-| Claude Code model          | Provider | Upstream model      |
+| Claude Code Alias          | Provider | Upstream Model      |
 | -------------------------- | -------- | ------------------- |
 | `claude-glm-5-3-flash`     | Z.AI     | `glm-5.3-flash`     |
 | `claude-glm-4-7-flash`     | Z.AI     | `glm-4.7-flash`     |
@@ -39,17 +42,36 @@ Claude Code
 GLM-5.3-Flash  GLM-4.7-Flash  DeepSeek V4 Flash
 ```
 
-Directory Structure
-
-The recommended local structure is:
+Repository Structure
 
 ```text
-Claude Code/
+claude-code-local-gateway/
+|
++-- gateway/
+|   +-- router.mjs
+|   +-- .env.example
+|
++-- startup/
+|   +-- start-hidden.vbs
+|
++-- install.ps1
++-- README.md
++-- SETUP.md
++-- LICENSE
++-- .gitignore
++-- .gitattributes
+```
+
+The repository does not contain the real `.env` file.
+
+Installed Windows Structure
+
+The installer creates:
+
+```text
+%USERPROFILE%\Desktop\Claude Code\
 |
 +-- projekter/
-|   +-- project-1/
-|   +-- project-2/
-|   +-- ...
 |
 +-- system/
     |
@@ -57,6 +79,8 @@ Claude Code/
     |   +-- router.mjs
     |   +-- .env
     |   +-- .env.example
+    |   +-- gateway.stdout.log
+    |   +-- gateway.error.log
     |
     +-- startup/
     |   +-- start-hidden.vbs
@@ -66,88 +90,8 @@ Claude Code/
     +-- SETUP.md
     +-- LICENSE
     +-- .gitignore
+    +-- .gitattributes
 ```
-
-File Responsibilities
-
-`gateway/router.mjs`
-
-The main local gateway.
-
-It:
-
-* listens on `127.0.0.1:4000`
-* exposes `/v1/models`
-* accepts Anthropic-compatible `/v1/messages` requests
-* reads the requested model
-* routes GLM-5.3-Flash to Z.AI
-* routes GLM-4.7-Flash to Z.AI
-* routes DeepSeek V4 Flash to DeepSeek
-* forwards responses back to Claude Code
-* supports streamed responses
-
-The router is intended to run locally and should not be exposed directly to the public internet.
-
-`gateway/.env`
-
-Contains the private provider API keys.
-
-Example:
-
-```text
-ZAI_API_KEY=YOUR_ZAI_API_KEY
-DEEPSEEK_API_KEY=YOUR_DEEPSEEK_API_KEY
-```
-
-Never commit this file to GitHub.
-
-`gateway/.env.example`
-
-Safe example of the required environment variables.
-
-It contains no real credentials.
-
-`startup/start-hidden.vbs`
-
-Windows startup launcher.
-
-It starts the Node.js gateway automatically and hides the process window.
-
-The script resolves the current user's Desktop directory dynamically and does not depend on a specific Windows username.
-
-`install.ps1`
-
-Automatic Windows installer.
-
-It:
-
-1. verifies required files
-2. asks for the Z.AI API key
-3. asks for the DeepSeek API key
-4. checks for Node.js
-5. installs Claude Code if required
-6. copies the system to the local `Claude Code\system` directory
-7. creates `.env`
-8. configures Claude Code
-9. configures Windows Startup
-10. starts the gateway
-11. verifies `/v1/models`
-
-`README.md`
-
-Short project overview and architecture.
-
-`SETUP.md`
-
-Complete setup and recreation instructions.
-
-`.gitignore`
-
-Prevents secrets and machine-specific files from being committed.
-
-`LICENSE`
-
-MIT license for the project.
 
 Requirements
 
@@ -158,11 +102,9 @@ Requirements
 * Z.AI API key
 * DeepSeek API key
 
-Installation on a New Windows Machine
+Git for Windows is recommended.
 
-The recommended method is to copy or clone the `system` directory and run `install.ps1`.
-
-Method 1 — GitHub
+Installation from GitHub
 
 Clone the repository:
 
@@ -182,25 +124,25 @@ Run the installer:
 powershell -ExecutionPolicy Bypass -File ".\install.ps1"
 ```
 
-Method 2 — USB Drive
+Installation from USB
 
-Copy the `system` directory from the USB drive to the new machine.
+Copy the complete repository folder to the new machine.
 
-Open PowerShell inside the copied `system` directory and run:
+Open PowerShell inside the repository folder and run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File ".\install.ps1"
 ```
 
-The installer copies the required files from the USB/repository location to:
+The installer copies only the required system files to:
 
 ```text
 %USERPROFILE%\Desktop\Claude Code\system
 ```
 
-The USB drive can then be removed.
+The source location does not need to remain on the computer.
 
-API Key Setup
+API Keys
 
 During installation, the installer asks for:
 
@@ -209,28 +151,30 @@ Z.AI API key
 DeepSeek API key
 ```
 
-The values are stored locally in:
+The keys are stored locally in:
 
 ```text
 %USERPROFILE%\Desktop\Claude Code\system\gateway\.env
 ```
 
-The API keys are not written to:
+Example:
 
-* `README.md`
-* `SETUP.md`
-* source code
-* `.env.example`
+```text
+ZAI_API_KEY=your_key_here
+DEEPSEEK_API_KEY=your_key_here
+```
+
+The real `.env` file must never be committed to Git.
 
 Claude Code Configuration
 
-Claude Code uses:
+The installer configures:
 
 ```text
 %USERPROFILE%\.claude\settings.json
 ```
 
-The important gateway settings are:
+The gateway environment is:
 
 ```json
 {
@@ -243,23 +187,39 @@ The important gateway settings are:
 }
 ```
 
-The installer preserves existing settings by backing up the existing `settings.json` before modifying it.
+The installer also sets:
+
+```text
+claude-glm-5-3-flash
+```
+
+as the default model.
+
+The model picker is configured to show only:
+
+```text
+GLM-5.3-Flash
+GLM-4.7-Flash
+DeepSeek V4 Flash
+```
+
+Existing `settings.json` content is preserved and backed up before modification.
 
 Automatic Startup
 
-The installer places:
+The installer creates:
 
 ```text
-start-hidden.vbs
+%USERPROFILE%\Desktop\Claude Code\system\startup\start-hidden.vbs
 ```
 
-in the Windows per-user Startup folder:
+It then copies that script to:
 
 ```text
 %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\
 ```
 
-At login:
+At Windows login:
 
 ```text
 Windows
@@ -280,22 +240,17 @@ router.mjs
 127.0.0.1:4000
 ```
 
-The gateway therefore starts automatically in the background.
-
 Model Routing
 
 GLM-5.3-Flash
 
-Claude Code:
-
 ```text
 claude-glm-5-3-flash
-```
-
-routes to:
-
-```text
+        |
+        v
 Z.AI
+        |
+        v
 glm-5.3-flash
 ```
 
@@ -307,16 +262,13 @@ https://api.z.ai/api/anthropic/v1/messages
 
 GLM-4.7-Flash
 
-Claude Code:
-
 ```text
 claude-glm-4-7-flash
-```
-
-routes to:
-
-```text
+        |
+        v
 Z.AI
+        |
+        v
 glm-4.7-flash
 ```
 
@@ -328,16 +280,13 @@ https://api.z.ai/api/anthropic/v1/messages
 
 DeepSeek V4 Flash
 
-Claude Code:
-
 ```text
 claude-deepseek-v4-flash
-```
-
-routes to:
-
-```text
+        |
+        v
 DeepSeek
+        |
+        v
 deepseek-v4-flash
 ```
 
@@ -347,47 +296,33 @@ Endpoint:
 https://api.deepseek.com/anthropic/v1/messages
 ```
 
-Switching Models
+Verification
 
-Inside Claude Code:
-
-```text
-/model
-```
-
-Choose one of:
-
-```text
-claude-glm-5-3-flash
-claude-glm-4-7-flash
-claude-deepseek-v4-flash
-```
-
-The model can be changed during an existing Claude Code session.
-
-Verify Installation
-
-Check Node.js
+Check Node.js:
 
 ```powershell
 node --version
 ```
 
-Check Claude Code
+Check npm:
+
+```powershell
+npm --version
+```
+
+Check Claude Code:
 
 ```powershell
 claude --version
 ```
 
-Check gateway port
+Check the gateway:
 
 ```powershell
 Get-NetTCPConnection -LocalPort 4000 -State Listen
 ```
 
-A Node.js process should be listening on port `4000`.
-
-Check model discovery
+Check model discovery:
 
 ```powershell
 Invoke-RestMethod `
@@ -396,7 +331,7 @@ Invoke-RestMethod `
     ConvertTo-Json -Depth 10
 ```
 
-Expected models:
+Expected model IDs:
 
 ```text
 claude-glm-5-3-flash
@@ -404,24 +339,59 @@ claude-glm-4-7-flash
 claude-deepseek-v4-flash
 ```
 
-Start the Gateway Manually
+Manual Gateway Start
 
-For troubleshooting:
+Run:
 
 ```powershell
 node "$env:USERPROFILE\Desktop\Claude Code\system\gateway\router.mjs"
 ```
 
-Expected:
+Expected output:
 
 ```text
+==========================================
+      CLAUDE CODE LOCAL MODEL GATEWAY
+==========================================
+
 Listening: http://127.0.0.1:4000
 ```
 
-Start the Startup Script Manually
+Manual Startup Test
+
+Run:
 
 ```powershell
 cscript.exe "$env:USERPROFILE\Desktop\Claude Code\system\startup\start-hidden.vbs"
+```
+
+The script starts Node.js without opening a visible console window.
+
+Logs
+
+The gateway uses:
+
+```text
+gateway.stdout.log
+gateway.error.log
+```
+
+Located at:
+
+```text
+%USERPROFILE%\Desktop\Claude Code\system\gateway\
+```
+
+Check them with:
+
+```powershell
+Get-Content "$env:USERPROFILE\Desktop\Claude Code\system\gateway\gateway.stdout.log"
+```
+
+and:
+
+```powershell
+Get-Content "$env:USERPROFILE\Desktop\Claude Code\system\gateway\gateway.error.log"
 ```
 
 Troubleshooting
@@ -435,23 +405,23 @@ Get-NetTCPConnection -LocalPort 4000 -State Listen |
     Select-Object LocalAddress, LocalPort, OwningProcess
 ```
 
-Inspect the process:
+Inspect it:
 
 ```powershell
 Get-Process -Id <PID>
 ```
 
-If the process is the gateway, it is already running and no additional copy should be started.
+Do not stop an unrelated process just because it uses port 4000.
 
 Router does not start
 
-Run it directly:
+Run:
 
 ```powershell
 node "$env:USERPROFILE\Desktop\Claude Code\system\gateway\router.mjs"
 ```
 
-Check that `.env` exists:
+Check `.env`:
 
 ```powershell
 Test-Path "$env:USERPROFILE\Desktop\Claude Code\system\gateway\.env"
@@ -465,7 +435,7 @@ True
 
 Models do not appear in `/model`
 
-Check:
+Check the gateway:
 
 ```powershell
 Invoke-RestMethod `
@@ -474,20 +444,21 @@ Invoke-RestMethod `
     ConvertTo-Json -Depth 10
 ```
 
-Then check:
+Then inspect Claude Code settings:
 
 ```powershell
 Get-Content "$env:USERPROFILE\.claude\settings.json" -Raw |
-    ConvertFrom-Json
+    ConvertFrom-Json |
+    ConvertTo-Json -Depth 20
 ```
 
-GLM-4.7-Flash returns 529
+The model picker should contain:
 
-A `529` response with an upstream overload message can come directly from Z.AI when the service is overloaded.
-
-This is different from a gateway configuration error.
-
-The router should be left unchanged unless the upstream API behavior changes.
+```text
+claude-glm-5-3-flash
+claude-glm-4-7-flash
+claude-deepseek-v4-flash
+```
 
 API key errors
 
@@ -504,24 +475,23 @@ ZAI_API_KEY=...
 DEEPSEEK_API_KEY=...
 ```
 
-Never paste the actual keys into support requests.
+Never paste the actual values into support requests.
 
-Security
+Upstream temporary errors
 
-Never publish:
+The gateway retries temporary upstream errors including:
 
 ```text
-gateway/.env
+429
+500
+502
+503
+529
 ```
 
-Do not put API keys into:
+If an upstream provider is temporarily overloaded, the gateway may retry the request automatically.
 
-* source code
-* README.md
-* SETUP.md
-* Git commits
-* screenshots
-* public issue reports
+Security
 
 The gateway binds to:
 
@@ -529,110 +499,88 @@ The gateway binds to:
 127.0.0.1:4000
 ```
 
-and is intended for local use.
+It is intended for local use.
 
-Do not expose port `4000` to the public internet.
+Do not expose port 4000 directly to the public internet.
 
-GitHub
+Never publish:
 
-The public source repository is:
+```text
+gateway/.env
+```
+
+Repository
 
 ```text
 https://github.com/Olh2012ooo/claude-code-local-gateway
 ```
 
-The public repository contains:
+Recreation Process
 
 ```text
-router.mjs
-install.ps1
-README.md
-SETUP.md
-.env.example
-start-hidden.vbs
-LICENSE
-.gitignore
-```
-
-The real `.env` file is intentionally excluded.
-
-Recreating the System
-
-The complete recreation process is:
-
-```text
-1. Install Node.js
-2. Install Claude Code
-3. Clone/download the repository
+1. Install or verify Node.js
+2. Install or verify Claude Code
+3. Clone or copy the repository
 4. Run install.ps1
-5. Enter Z.AI API key
-6. Enter DeepSeek API key
-7. Installer creates local .env
+5. Enter the Z.AI API key
+6. Enter the DeepSeek API key
+7. Installer creates the local .env
 8. Installer configures Claude Code
 9. Installer configures Windows Startup
-10. Gateway starts
-11. Verify /v1/models
+10. Installer starts the gateway
+11. Installer verifies /v1/models
 12. Start Claude Code
 13. Use /model
 ```
 
-Design Principle
+===== startup/start-hidden.vbs =====
 
-The gateway intentionally performs a small number of tasks.
+Set WShell = CreateObject("WScript.Shell")
 
-Claude Code remains responsible for:
+Desktop = WShell.SpecialFolders("Desktop")
+Router = Desktop & "\Claude Code\system\gateway\router.mjs"
 
-* sessions
-* context
-* tools
-* agents
-* model selection
-* conversation state
+WShell.Run "node.exe """ & Router & """", 0, False
 
-The local gateway is responsible for:
+===== .gitignore =====
 
-* provider routing
-* model mapping
-* request forwarding
-* response forwarding
-* model discovery
+Secrets
 
-Core flow:
+.env
+.env.*
+!.env.example
 
-```text
-Claude Code
-    |
-    v
-Local Gateway
-    |
-    v
-Read model
-    |
-    v
-Select provider
-    |
-    v
-Forward request
-    |
-    v
-Forward response
+Local configuration
+
+.claude/
+
+Logs
+
+*.log
+
+Node
+
+node_modules/
+
+Windows
+
+Thumbs.db
+Desktop.ini
+
+Editors
+
+.vscode/
+.idea/
+
+===== .gitattributes =====
+
+*.ps1 text eol=crlf
+*.vbs text eol=crlf
+*.mjs text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.example text eol=lf
+LICENSE text eol=lf
+
 ```
-
-Current Tested Environment
-
-The original setup was tested with:
-
-```text
-Windows 11
-Node.js 26.7.0
-Claude Code 2.1.251
-
-Z.AI
-- GLM-5.3-Flash
-- GLM-4.7-Flash
-
-DeepSeek
-- DeepSeek V4 Flash
 ```
-
-The gateway itself is designed to use the versions and model IDs configured in `router.mjs`.
